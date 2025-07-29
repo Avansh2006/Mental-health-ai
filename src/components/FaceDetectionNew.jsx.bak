@@ -1,0 +1,179 @@
+import React, { useRef, useEffect, useState } from 'react';
+import * as faceapi from 'face-api.js';
+
+function FaceDetectionNew() {
+    const videoRef = useRef();
+    const canvasRef = useRef();
+    const [currentMood, setCurrentMood] = useState(null);
+    const [moodHistory, setMoodHistory] = useState([]);
+
+    useEffect(() => {
+        const loadModelsAndStartVideo = async () => {
+            try {
+                const MODEL_URL = '/models';
+                console.log('Loading models from:', MODEL_URL);
+                
+                // Load all models
+                await Promise.all([
+                    faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                    faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                    faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+                    faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL)
+                ]);
+
+                // Start video
+                if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                    try {
+                        const stream = await navigator.mediaDevices.getUserMedia({
+                            video: {
+                                width: 720,
+                                height: 560
+                            }
+                        });
+                        if (videoRef.current) {
+                            videoRef.current.srcObject = stream;
+                        }
+                    } catch (err) {
+                        console.error("Error accessing webcam:", err);
+                        alert("Error accessing webcam: " + err.message);
+                    }
+                }
+            } catch (err) {
+                console.error("Error loading models:", err);
+                alert("Error loading face detection models: " + err.message);
+            }
+        };
+
+        loadModelsAndStartVideo();
+
+        // Cleanup function
+        return () => {
+            if (videoRef.current && videoRef.current.srcObject) {
+                const tracks = videoRef.current.srcObject.getTracks();
+                tracks.forEach(track => track.stop());
+            }
+        };
+    }, []);
+
+    // Handle video play event
+    useEffect(() => {
+        if (!videoRef.current) return;
+
+        videoRef.current.addEventListener('play', () => {
+            // Create canvas if it doesn't exist
+            if (!canvasRef.current) {
+                const canvas = faceapi.createCanvasFromMedia(videoRef.current);
+                canvas.style.position = 'absolute';
+                canvasRef.current = canvas;
+                videoRef.current.parentNode.appendChild(canvas);
+            }
+
+            const displaySize = {
+                width: videoRef.current.width,
+                height: videoRef.current.height
+            };
+            faceapi.matchDimensions(canvasRef.current, displaySize);
+
+            // Set canvas transform for mirroring
+            const ctx = canvasRef.current.getContext('2d');
+            ctx.setTransform(-1, 0, 0, 1, canvasRef.current.width, 0);
+
+            // Run face detection
+            const interval = setInterval(async () => {
+                if (videoRef.current && !videoRef.current.paused) {
+                    const detections = await faceapi.detectAllFaces(
+                        videoRef.current,
+                        new faceapi.TinyFaceDetectorOptions()
+                    )
+                    .withFaceLandmarks()
+                    .withFaceExpressions();
+
+                    const resizedDetections = faceapi.resizeResults(detections, displaySize);
+                    
+                    // Clear canvas with proper transform
+                    const ctx = canvasRef.current.getContext('2d');
+                    ctx.save();
+                    ctx.setTransform(1, 0, 0, 1, 0, 0);
+                    ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+                    ctx.restore();
+                    
+                    // Draw all detections
+                    faceapi.draw.drawDetections(canvasRef.current, resizedDetections);
+                    faceapi.draw.drawFaceLandmarks(canvasRef.current, resizedDetections);
+                    faceapi.draw.drawFaceExpressions(canvasRef.current, resizedDetections);
+
+                    // Update mood
+                    if (detections.length > 0) {
+                        const expressions = detections[0].expressions;
+                        const mood = Object.entries(expressions).reduce((a, b) => a[1] > b[1] ? a : b)[0];
+                        setCurrentMood(mood);
+                        setMoodHistory(prev => {
+                            const newHistory = [...prev, { mood, timestamp: new Date() }];
+                            return newHistory.slice(-5); // Keep last 5 moods
+                        });
+                    }
+                }
+            }, 100);
+
+            return () => clearInterval(interval);
+        });
+    }, []);
+
+    const getMoodEmoji = (mood) => {
+        const emojiMap = {
+            happy: '😊',
+            sad: '😢',
+            angry: '😠',
+            disgusted: '🤢',
+            surprised: '😮',
+            fearful: '😨',
+            neutral: '😐'
+        };
+        return emojiMap[mood] || '🤔';
+    };
+
+    return (
+        <div className="flex flex-col gap-4">
+            <div className="relative w-[480px] h-[360px] bg-gray-900 rounded-lg overflow-hidden">
+                <video
+                    ref={videoRef}
+                    autoPlay
+                    muted
+                    playsInline
+                    width="480"
+                    height="360"
+                    className="absolute inset-0"
+                    style={{ transform: 'scaleX(-1)' }}
+                />
+            </div>
+            
+            {/* Mood Display */}
+            <div className="bg-white rounded-lg p-4 shadow-lg w-[480px]">
+                <h3 className="text-lg font-semibold mb-2">Current Mood</h3>
+                {currentMood && (
+                    <div className="flex items-center gap-2 text-xl">
+                        <span>{getMoodEmoji(currentMood)}</span>
+                        <span className="capitalize">{currentMood}</span>
+                    </div>
+                )}
+                
+                {/* Mood History */}
+                <div className="mt-4">
+                    <h4 className="text-sm font-semibold mb-2">Recent Moods</h4>
+                    <div className="flex gap-2">
+                        {moodHistory.map((item, index) => (
+                            <div key={index} className="flex flex-col items-center bg-gray-100 rounded p-2">
+                                <span>{getMoodEmoji(item.mood)}</span>
+                                <span className="text-xs text-gray-600">
+                                    {item.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+export default FaceDetectionNew;
